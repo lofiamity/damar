@@ -1,0 +1,127 @@
+const express = require('express');
+const axios = require('axios');
+const { Readable } = require('stream');
+
+const app = express();
+const PORT = 7860;
+
+// Abaikan request favicon
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
+// Halaman utama (Decoy untuk Admin WiFi)
+app.get('/', (req, res) => {
+    const htmlSapaan = `
+        <!DOCTYPE html>
+        <html lang="id">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>NLP Inference Node</title>
+            <style>
+                body { margin: 0; padding: 0; background-color: #0b0f19; color: #94a3b8; font-family: system-ui, -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; }
+                .card { background: #111827; padding: 40px; border-radius: 16px; max-width: 450px; width: 90%; border: 1px solid #1f2937; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); }
+                .status-wrapper { display: flex; align-items: center; gap: 10px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: #10b981; margin-bottom: 24px; }
+                .pulse { width: 8px; height: 8px; background-color: #10b981; border-radius: 50%; box-shadow: 0 0 12px #10b981; }
+                h1 { font-size: 22px; color: #f3f4f6; margin: 0 0 12px 0; font-weight: 500; letter-spacing: -0.5px; }
+                p { font-size: 14px; line-height: 1.6; margin-bottom: 30px; }
+                .code-window { background: #030712; padding: 20px; border-radius: 8px; border: 1px solid #1f2937; font-family: ui-monospace, monospace; font-size: 13px; color: #38bdf8; }
+                .key { color: #f472b6; }
+                .val { color: #a7f3d0; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <div class="status-wrapper">
+                    <div class="pulse"></div> Data Node Active
+                </div>
+                <h1>Distributed Text Pipeline</h1>
+                <p>Akses antarmuka langsung tidak diizinkan. Endpoint ini didedikasikan untuk sinkronisasi dataset mentah (NLP) ke arsitektur internal. Silakan gunakan integrasi API yang sah.</p>
+                <div class="code-window">
+                    {<br>
+                    &nbsp;&nbsp;<span class="key">"status"</span>: <span class="val">401</span>,<br>
+                    &nbsp;&nbsp;<span class="key">"error"</span>: <span class="val">"Missing Bearer Token"</span>,<br>
+                    &nbsp;&nbsp;<span class="key">"timestamp"</span>: <span class="val">"${new Date().toISOString()}"</span><br>
+                    }
+                </div>
+            </div>
+        </body>
+        </html>
+    `;
+    res.status(401).send(htmlSapaan);
+});
+
+// Proxy Video
+app.get('/:id', async (req, res) => {
+    const videoId = req.params.id;
+    const embedUrl = `https://vidjuices.com/embed.php?bucket=temporary&id=${videoId}`;
+    
+    try {
+        const browserHeaders = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Referer': 'https://vidjuices.com/'
+        };
+
+        const pageResponse = await axios.get(embedUrl, { 
+            headers: browserHeaders,
+            validateStatus: status => status >= 200 && status < 500 
+        });
+
+        if (pageResponse.status === 404) {
+            return res.status(404).send("Video tidak ditemukan di server sumber.");
+        }
+
+        const match = pageResponse.data.match(/<source\s+src="([^"]+\.mp4)"/);
+        if (!match) return res.status(404).send("Link MP4 gagal diekstrak.");
+        const mp4Url = match[1];
+
+        const streamHeaders = new Headers(browserHeaders);
+        if (req.headers.range) {
+            streamHeaders.set('Range', req.headers.range);
+        }
+
+        // Paksa Header Host untuk bypass 403 SNI dari Hostinger/Cloudflare
+        const urlObj = new URL(mp4Url);
+        streamHeaders.set('Host', urlObj.hostname);
+
+        const fetchResponse = await fetch(mp4Url, {
+            method: 'GET',
+            headers: streamHeaders,
+            redirect: 'follow'
+        });
+
+        res.status(fetchResponse.status);
+
+        const importantHeaders = [
+            'content-type', 'content-length', 'content-range', 
+            'accept-ranges', 'content-encoding'
+        ];
+
+        importantHeaders.forEach(header => {
+            if (fetchResponse.headers.has(header)) {
+                res.setHeader(header, fetchResponse.headers.get(header));
+            }
+        });
+
+        const stream = Readable.fromWeb(fetchResponse.body);
+
+        stream.on('error', () => {
+            if (!res.headersSent) res.end();
+        });
+        
+        req.on('close', () => {
+            stream.destroy();
+        });
+
+        stream.pipe(res);
+
+    } catch (err) {
+        console.error("Kesalahan Internal:", err.message);
+        if (!res.headersSent) {
+            res.status(500).send("Proxy Error");
+        }
+    }
+});
+
+app.listen(PORT, () => console.log(`Proxy berjalan di port ${PORT}`));
